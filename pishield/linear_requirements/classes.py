@@ -97,22 +97,24 @@ class Inequality():
         body_variables = [elem.id for elem in self.get_body_variables()]
         return x.id in body_variables
 
+    def _evaluate_inequality(self, eval_body_value: torch.Tensor) -> torch.Tensor:
+        if self.ineq_sign == '>':
+            return eval_body_value > (self.constant - TOLERANCE)
+        elif self.ineq_sign == '>=':
+            return eval_body_value >= (self.constant - TOLERANCE)
+        elif self.ineq_sign == '<':
+            return eval_body_value < (self.constant + TOLERANCE)
+        elif self.ineq_sign == '<=':
+            return eval_body_value <= (self.constant + TOLERANCE)
+        raise ValueError(f"Unknown inequality sign: {self.ineq_sign}")
+
     def check_satisfaction(self, preds: torch.Tensor) -> torch.Tensor:
         eval_body_value = eval_atoms_list(self.body, preds)
-        if self.ineq_sign == '>':
-            results = eval('(eval_body_value > self.constant - TOLERANCE) | (eval_body_value > self.constant + TOLERANCE)')
-        elif self.ineq_sign == '>=':
-            results = eval('(eval_body_value >= self.constant - TOLERANCE) | (eval_body_value >= self.constant + TOLERANCE)')
-        # if not results.all():
-        #     print('Problem here:', eval_body_value[eval_body_value<=self.constant-TOLERANCE])
-        return results #.all()
+        return self._evaluate_inequality(eval_body_value)
 
-    def detailed_sat_check(self, preds: torch.Tensor) -> torch.Tensor:
+    def detailed_sat_check(self, preds: torch.Tensor) -> tuple:
         eval_body_value = eval_atoms_list(self.body, preds)
-        if self.ineq_sign == '>':
-            results = eval('(eval_body_value > self.constant - TOLERANCE) | (eval_body_value > self.constant + TOLERANCE)')
-        elif self.ineq_sign == '>=':
-            results = eval('(eval_body_value >= self.constant - TOLERANCE) | (eval_body_value >= self.constant + TOLERANCE)')
+        results = self._evaluate_inequality(eval_body_value)
         return results, eval_body_value, self.constant, self.ineq_sign
 
 
