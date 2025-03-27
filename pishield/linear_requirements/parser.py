@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Tuple
 
 from pishield.linear_requirements.classes import Variable, Atom, Inequality, Constraint
 
@@ -94,7 +94,7 @@ def parse_constraint(constr) -> Constraint:
     return constr
 
 
-def parse_constraints_file(file: str) -> (List[Variable], List[Constraint]):
+def parse_constraints_file(file: str) -> Tuple[List[Variable], List[Constraint]]:
     f = open(file, 'r')
     constraints = []
     ordering = []
