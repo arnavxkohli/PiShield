@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Union, Tuple, Dict
 import torch
 import random
 
@@ -129,51 +129,3 @@ class ShieldLayer(torch.nn.Module):
         else:
             pass
         return result
-
-    def optimize_gradients(self, preds: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
-        """
-        Optimizes gradients based on constraints and current predictions.
-        Args:
-            preds (torch.Tensor): Current model predictions
-            ground_truth (torch.Tensor): Ground truth labels
-        Returns:
-            torch.Tensor: Modified gradients
-        """
-        optimized_preds = preds.clone()
-
-        # Group constraints by anchor variable
-        constraint_groups = {}
-        for constraint in self.constraints:
-            anchor = constraint.single_inequality.body[0].variable
-            constraint_groups.setdefault(anchor, []).append(constraint)
-
-        # Process each anchor variable
-        for anchor, constraints in constraint_groups.items():
-            anchor_id = anchor.id
-            candidates = []
-
-            for constraint in constraints:
-                inequality = constraint.single_inequality
-
-                # Select random atom to mask (one-hot encoding) TODO: Try other methods other than random
-                mask_atom = inequality.body[random.randint(0, len(inequality.body) - 1)]
-                mask_var_id = mask_atom.variable.id
-
-                # Apply the mask and calculate correction
-                correction = optimized_preds[:, mask_var_id].clone()
-
-                # Apply corrections from other atoms
-                for atom in inequality.body:
-                    if atom.variable.id == anchor_id:
-                        continue
-
-                    sign_factor = -1 if atom.positive_sign else 1
-                    correction += optimized_preds[:, atom.variable.id] * atom.coefficient * sign_factor
-
-                candidates.append(correction)
-
-            # Update with maximum value from candidates
-            if candidates:
-                optimized_preds[:, anchor_id] = torch.stack(candidates).amax(dim=0)
-
-        return optimized_preds
