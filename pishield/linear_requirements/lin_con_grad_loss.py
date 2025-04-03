@@ -60,9 +60,9 @@ class LinearConstraintGradientLoss(nn.Module):
              return torch.tensor(0.0, device=predictions.device, dtype=predictions.dtype)
 
         prediction_errors = predictions - ground_truth
-        accumulated_loss= torch.zeros(batch_size,
-                                             device=predictions.device,
-                                             dtype=predictions.dtype)
+        accumulated_loss = torch.zeros(batch_size,
+                                       device=predictions.device,
+                                       dtype=predictions.dtype)
 
         # Iterate through the precomputed list of anchor IDs
         for anchor_id in self.anchor_ids:

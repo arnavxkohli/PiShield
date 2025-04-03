@@ -180,6 +180,7 @@ class GradOptimLayer(torch.nn.Module):
 
             # If the norm of the calculated correction is larger, update the prediction
             if corrected_norm > original_norm:
+                preds = preds.clone()
                 preds[:, anchor_id] = correction
                 final_mask_id = mask_id
 
