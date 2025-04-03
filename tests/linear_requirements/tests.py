@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import torch
 from pishield.linear_requirements.compute_sets_of_constraints import compute_sets_of_constraints
@@ -10,86 +11,88 @@ from example_predictions import example_predictions_url, example_predictions_bot
 
 
 class TestConstraintCorrection(unittest.TestCase):
+    project_dir = Path(__file__).resolve().parents[2]
+    data_dir = project_dir / 'data'/ 'linear_requirements'
 
     def test_tiny1(self):
         predictions = [-1.0, 5.0, 2.0]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/tiny_constraints1.txt'
+        constraints_path = self.data_dir / 'custom_constraints/tiny_constraints1.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_tiny2(self):
         predictions = [-6.0, 15.0, 1.0]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/tiny_constraints2.txt'
+        constraints_path = self.data_dir / 'custom_constraints/tiny_constraints2.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_tiny3(self):
         predictions = [-1.0, 5.0, -2.0]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/tiny_constraints3.txt'
+        constraints_path = self.data_dir / 'custom_constraints/tiny_constraints3.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_tiny4(self):
         predictions = [-10.0, 5.0, -2.0, -9, 2, 20]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/tiny_constraints4.txt'
+        constraints_path = self.data_dir / 'custom_constraints/tiny_constraints4.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_constants1(self):
         predictions = [-21.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/constraints_constants1.txt'
+        constraints_path = self.data_dir / 'custom_constraints/constraints_constants1.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_constants2(self):
         predictions = [-5., 3.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/constraints_constants2.txt'
+        constraints_path = self.data_dir / 'custom_constraints/constraints_constants2.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_constants3(self):
         predictions = [-5., 3.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/constraints_constants3.txt'
+        constraints_path = self.data_dir / 'custom_constraints/constraints_constants3.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_equality1(self):
         predictions = [-5., -2., -1.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/equality_constraints1.txt'
+        constraints_path = self.data_dir / 'custom_constraints/equality_constraints1.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_equality2(self):
         predictions = [-5., -2., -1.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/equality_constraints2.txt'
+        constraints_path = self.data_dir / 'custom_constraints/equality_constraints2.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_equality3(self):
         predictions = [-5., -2., -1.]
         predictions = torch.tensor(predictions).unsqueeze(0)
-        constraints_path = '../../data/linear_requirements/custom_constraints/equality_constraints3.txt'
+        constraints_path = self.data_dir / 'custom_constraints/equality_constraints3.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_url_predictions(self):
         predictions = example_predictions_url()
-        constraints_path = '../../data/linear_requirements/url/url_constraints.txt'
+        constraints_path = self.data_dir / 'url/url_constraints.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
     def test_botnet_predictions(self):
         predictions = example_predictions_botnet()
-        constraints_path = '../../data/linear_requirements/botnet/botnet_constraints.txt'
+        constraints_path = self.data_dir / 'botnet/botnet_constraints.txt'
         ordering_choice = 'given'
         self.apply_test_CL(predictions, constraints_path, ordering_choice)
 
