@@ -1,5 +1,5 @@
-from typing import List, Tuple
-
+from typing import List, Tuple, Dict, Set
+from copy import deepcopy
 from pishield.linear_requirements.classes import Variable, Atom, Inequality, Constraint
 
 ALLOWED_BOOL_OPS = ['or', 'neg']
@@ -109,6 +109,43 @@ def parse_constraints_file(file: str) -> Tuple[List[Variable], List[Constraint]]
     if len(ordering) == 0:
         raise Exception('An ordering of the variables must be provided!')
     return ordering, constraints
+
+
+def remap_constraint_variables(ordering: List[Variable],
+                               constraints: List[Constraint]) -> Tuple[List[Variable],
+                                                                       List[Constraint],
+                                                                       Dict[str, str]]:
+    # Assumption: Variables are of the form letter_number. Letter can be any letter, preferably y.
+    # Note: The mappings are strings, the ordering is a list of variables.
+    if not ordering:
+        raise Exception("An ordering of the variables must be provided!")
+
+    # Active variables are those that are actually involved within the
+    # constraints
+    active_variables: Set[str] = set()
+    for inequality in map(lambda c: c.single_inequality, constraints):
+        active_variables |= set([var.readable() for var in inequality.get_body_variables()])
+
+    # Build a mapping from original variable names to new Variable instances
+    variable_mapping: Dict[str, str] = {}
+    new_index: int = 0
+    for readable_variable in map((lambda v: v.readable()), ordering):
+        if readable_variable in active_variables:
+            variable_mapping[readable_variable] = f"y_{new_index}"
+            new_index += 1
+
+    # Perform the remapping with a deepcopy to ensure there isn't any mutation of the
+    # original constraint
+    remapped_constraints = deepcopy(constraints)
+    for body_atoms in map((lambda c: c.single_inequality.body), remapped_constraints):
+        for atom in body_atoms:
+            original_var = atom.variable.readable()
+            if original_var not in variable_mapping:
+                raise Exception(f"Unexpected variable '{original_var}' not in mapping.")
+            atom.variable = Variable(variable_mapping[original_var])
+
+    return [Variable(variable_mapping[var.readable()]) for var in ordering
+            if var.readable() in variable_mapping], remapped_constraints, variable_mapping
 
 
 def split_constraints(ordering: List[Variable], constraints: List[Constraint]):
