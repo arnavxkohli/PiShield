@@ -6,10 +6,8 @@ from pishield.linear_requirements.classes import Variable, Constraint, Atom
 from pishield.linear_requirements.compute_sets_of_constraints import get_pos_neg_x_constr, compute_sets_of_constraints
 from pishield.linear_requirements.correct_predictions import get_constr_at_level_x, get_final_x_correction
 from pishield.linear_requirements.feature_orderings import set_ordering
-from pishield.linear_requirements.parser import parse_constraints_file, split_constraints
-
-INFINITY = torch.inf
-EPSILON = 1e-12
+from pishield.linear_requirements.parser import parse_constraints_file, split_constraints, remap_constraint_variables
+from pishield.linear_requirements.constants import EPSILON, INFINITY
 
 
 class ShieldLayer(torch.nn.Module):
@@ -18,6 +16,7 @@ class ShieldLayer(torch.nn.Module):
         self.num_variables = num_variables
         ordering, constraints = parse_constraints_file(requirements_filepath)
         # clustered_constraints = split_constraints(ordering, constraints)
+        ordering, constraints, _ = remap_constraint_variables(ordering, constraints)
         self.ordering = set_ordering(ordering, ordering_choice)
         self.constraints = constraints
         self.sets_of_constr = compute_sets_of_constraints(ordering, constraints, verbose=True)

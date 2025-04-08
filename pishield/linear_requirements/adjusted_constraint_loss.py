@@ -1,4 +1,5 @@
 import torch
+from pishield.linear_requirements.constants import EPSILON, INFINITY
 
 '''
 - TODO: Fix the implementation for anchor coefficients which are not 1. Could be

@@ -120,32 +120,43 @@ def remap_constraint_variables(ordering: List[Variable],
     if not ordering:
         raise Exception("An ordering of the variables must be provided!")
 
-    # Active variables are those that are actually involved within the
-    # constraints
+    # Active variables are those that are actually involved within the constraints
     active_variables: Set[str] = set()
-    for inequality in map(lambda c: c.single_inequality, constraints):
-        active_variables |= set([var.readable() for var in inequality.get_body_variables()])
+    for inequality in map((lambda c: c.single_inequality), constraints):
+        active_variables.update(var.readable() for var in inequality.get_body_variables())
 
-    # Build a mapping from original variable names to new Variable instances
+    # Build a mapping from original variable names to new variable names of the form y_i
     variable_mapping: Dict[str, str] = {}
     new_index: int = 0
-    for readable_variable in map((lambda v: v.readable()), ordering):
-        if readable_variable in active_variables:
-            variable_mapping[readable_variable] = f"y_{new_index}"
+    for var in map((lambda v: v.readable()), ordering):
+        if var in active_variables:
+            variable_mapping[var] = f"y_{new_index}"
             new_index += 1
 
-    # Perform the remapping with a deepcopy to ensure there isn't any mutation of the
-    # original constraint
+    # Perform the remapping with a deepcopy to ensure there isn't any mutation of the original constraints
     remapped_constraints = deepcopy(constraints)
-    for body_atoms in map((lambda c: c.single_inequality.body), remapped_constraints):
-        for atom in body_atoms:
+    for constraint in remapped_constraints:
+        for atom in constraint.single_inequality.body:
             original_var = atom.variable.readable()
             if original_var not in variable_mapping:
                 raise Exception(f"Unexpected variable '{original_var}' not in mapping.")
             atom.variable = Variable(variable_mapping[original_var])
 
-    return [Variable(variable_mapping[var.readable()]) for var in ordering
-            if var.readable() in variable_mapping], remapped_constraints, variable_mapping
+    # Build a new variable ordering that includes only remapped active variables
+    remapped_ordering = [
+        Variable(variable_mapping[var.readable()])
+        for var in ordering
+        if var.readable() in variable_mapping
+    ]
+
+    # Construct a reverse mapping from remapped names to original names
+    # Used to ensure the tensor shape stays same in the ShiedLayer
+    reverse_mapping = {
+        mapped_var: original_var
+        for original_var, mapped_var in variable_mapping.items()
+    }
+
+    return remapped_ordering, remapped_constraints, reverse_mapping
 
 
 def split_constraints(ordering: List[Variable], constraints: List[Constraint]):

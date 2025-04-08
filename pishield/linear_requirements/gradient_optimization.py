@@ -2,13 +2,12 @@ import torch
 import random
 from typing import List, Tuple, Dict
 from pishield.linear_requirements.classes import Constraint, Variable
-
+from pishield.linear_requirements.constants import EPSILON, INFINITY
 
 '''
 - TODO: Fix the implementation for anchor coefficients which are not 1. Could be
   -ve, in which case use min.
 - Ensure the dimensions work well. Need to squeeze back to 2D if moving to 3D.
-- Train and test time behaviour should be as it is expected.
 - Remember considerations for strict and non-strict inequalities.
 '''
 
@@ -63,7 +62,7 @@ class GradOptimLayer(torch.nn.Module):
 
         self.anchor_masks = None
 
-    def forward(self, preds: torch.Tensor, ground_truth: torch.Tensor) -> torch.Tensor:
+    def forward(self, preds: torch.Tensor, ground_truth: torch.Tensor | None =None) -> torch.Tensor:
         """
         Applies element-wise constraint-based adjustments to predictions.
 
@@ -84,6 +83,12 @@ class GradOptimLayer(torch.nn.Module):
                     - The mask variable ID (mask_id) used in the correction, if a correction was applied.
                     - -1 if no correction was applied for that element.
         """
+
+        # If in training mode, or if the ground truth has not been passed,
+        # return the predicitions as is.
+        if self.training or ground_truth is None:
+            return preds
+
         if preds.shape != ground_truth.shape:
             raise ValueError(
                 f"GradOptimLayer Error: predictions shape {preds.shape} does not match "
@@ -110,12 +115,12 @@ class GradOptimLayer(torch.nn.Module):
         self.anchor_masks = torch.full_like(preds, -1, dtype=torch.long)
 
         # Apply corrections for each anchor variable group
-        for anchor_var, constraints_for_anchor in self.constraint_groups.items():
+        for anchor_var, anchor_constraints in self.constraint_groups.items():
             anchor_id = anchor_var.id
 
             # Compute corrected predictions and mask IDs for this anchor variable
             corrected_anchor_preds, corrected_anchor_masks = self._apply_correction(
-                constraints=constraints_for_anchor,
+                constraints=anchor_constraints,
                 preds=preds,
                 ground_truth=ground_truth,
                 anchor_id=anchor_id,
@@ -165,8 +170,6 @@ class GradOptimLayer(torch.nn.Module):
         # Initialize corrections and masks with default (unchanged) values for each
         all_corrections = [anchor_predictions]
         all_mask_ids = [torch.full_like(anchor_predictions, -1, dtype=torch.long)]
-
-        map((lambda c: c.single_inequality), constraints)
 
         for inequality in map((lambda c: c.single_inequality), constraints):
             # Possible for y_0 > 0 kind of construction.
