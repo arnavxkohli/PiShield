@@ -1,5 +1,8 @@
 from typing import List
 import torch
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def eval_atoms_list(atoms_list: List, preds: torch.Tensor, reduction='sum'):
@@ -26,7 +29,9 @@ def check_constraint_satisfaction(preds: torch.Tensor, constraints: List) -> boo
         if not sat.all():
             all_constr_sat = False
             # raise Exception('Not satisfied!', constr.readable())
-            print('Not satisfied!', constr.readable())
+            logger.debug(f'Not satisfied! Constraint: {constr.readable()}')
+        else:
+            logger.debug(f"Constraint {constr.readable()} satisfied.")
     if all_constr_sat:
-        print('All constraints are satisfied!')
+        logger.info('All constraints are satisfied!')
     return all_constr_sat

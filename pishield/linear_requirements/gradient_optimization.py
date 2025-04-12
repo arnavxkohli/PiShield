@@ -7,8 +7,7 @@ from pishield.linear_requirements.constants import EPSILON, INFINITY
 '''
 - TODO: Fix the implementation for anchor coefficients which are not 1. Could be
   -ve, in which case use min.
-- Ensure the dimensions work well. Need to squeeze back to 2D if moving to 3D.
-- Remember considerations for strict and non-strict inequalities.
+- Need to figure out sequential ordering of structured constraints like y_1 > y_0 and y_2 > y_1
 '''
 
 class GradOptimLayer(torch.nn.Module):
@@ -31,6 +30,23 @@ class GradOptimLayer(torch.nn.Module):
     which variable's prediction (mask_id) was used in the calculation that resulted in the final
     corrected value. A value of -1 indicates the original prediction h_A was kept
     (i.e., no correction applied for that element).
+
+    Note:
+        A key flaw with this layer is that it is unable to handle constraints of the construction:
+        y_1 > y_0; y_2 > y_1.
+        Ideally, this would be structued within the layer as:
+            y_0' = y_0
+            y_1' = max(y_1, y_0')
+            y_2' = max(y_2, y_1')
+        given the ordering y_0, y_1, y_2
+        The layer uses the heuristic that the anchor variable is the first one in the body,
+        and does not appear as a dependent variable in any other inequalities. An extension
+        to this layer would be the case where the sequential ordering is respected.
+        The current construction performed by this layer is:
+            y_0' = y_0
+            y_1' = max(y_1, y_0')
+            y_2' = max(y_2, y_1)
+        Note the y_1' vs y_1 difference visible in the two constructions.
 
     Attributes:
         constraint_groups (Dict[Variable, List[Constraint]]): Constraints grouped by
@@ -62,7 +78,7 @@ class GradOptimLayer(torch.nn.Module):
 
         self.anchor_masks = None
 
-    def forward(self, preds: torch.Tensor, ground_truth: torch.Tensor | None =None) -> torch.Tensor:
+    def forward(self, preds: torch.Tensor, ground_truth: torch.Tensor | None = None) -> torch.Tensor:
         """
         Applies element-wise constraint-based adjustments to predictions.
 
@@ -86,7 +102,7 @@ class GradOptimLayer(torch.nn.Module):
 
         # If in training mode, or if the ground truth has not been passed,
         # return the predicitions as is.
-        if self.training or ground_truth is None:
+        if not self.training or ground_truth is None:
             return preds
 
         if preds.shape != ground_truth.shape:
@@ -108,9 +124,7 @@ class GradOptimLayer(torch.nn.Module):
                 f"got shape {preds.shape}"
             )
 
-        # Clone predictions for in-place updates
         optimized_preds = preds.clone()
-
         # Initialize anchor_masks with -1 (i.e., no correction)
         self.anchor_masks = torch.full_like(preds, -1, dtype=torch.long)
 
@@ -118,7 +132,6 @@ class GradOptimLayer(torch.nn.Module):
         for anchor_var, anchor_constraints in self.constraint_groups.items():
             anchor_id = anchor_var.id
 
-            # Compute corrected predictions and mask IDs for this anchor variable
             corrected_anchor_preds, corrected_anchor_masks = self._apply_correction(
                 constraints=anchor_constraints,
                 preds=preds,
@@ -173,7 +186,6 @@ class GradOptimLayer(torch.nn.Module):
 
         for inequality in map((lambda c: c.single_inequality), constraints):
             # Possible for y_0 > 0 kind of construction.
-            # TODO: Confirm the desired behaviour at this step
             if len(inequality.body) <= 1:
                 continue
 
@@ -186,6 +198,15 @@ class GradOptimLayer(torch.nn.Module):
             # Initialize correction with original value for masked variable (h_M)
             correction = preds[:, mask_var_id].clone()
 
+            # Strict vs non-strict inequality correction
+            epsilon = torch.full_like(correction, EPSILON)
+            if inequality.ineq_sign == '<':
+                correction -= epsilon
+            elif inequality.ineq_sign == '>':
+                correction += epsilon
+            else:
+                epsilon = torch.zeros_like(correction, dtype=correction.dtype)
+
             for atom in inequality.body:
                 atom_id = atom.variable.id
                 # y_{non-masked} only
@@ -195,7 +216,7 @@ class GradOptimLayer(torch.nn.Module):
                 # Opposite sign: y_A - y_B - y_C > 0 becomes y_A > y_B + y_C,
                 # Working with the right side of the inequality always
                 sign_factor = -1.0 if atom.positive_sign else 1.0
-                correction += ground_truth[:, atom_id] * atom.coefficient * sign_factor
+                correction += ground_truth[:, atom_id] * atom.coefficient * sign_factor # Not sure if this is correct
 
             all_corrections.append(correction)
             all_mask_ids.append(torch.full_like(correction, mask_var_id))
