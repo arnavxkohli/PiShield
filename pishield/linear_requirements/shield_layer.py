@@ -16,6 +16,7 @@ class ShieldLayer(torch.nn.Module):
         self.num_variables = num_variables
         ordering, constraints = parse_constraints_file(requirements_filepath)
         # clustered_constraints = split_constraints(ordering, constraints)
+        # The below optimization is only required in the supervised learning case (regression)
         ordering, constraints, _ = remap_constraint_variables(ordering, constraints)
         self.ordering = set_ordering(ordering, ordering_choice)
         self.constraints = constraints
