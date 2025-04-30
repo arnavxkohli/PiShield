@@ -53,7 +53,8 @@ def get_final_x_correction(initial_x_val: torch.Tensor, pos_x_corrected: torch.T
         if current_mask is not None:
             current_mask = torch.where(indices_2.unsqueeze(1).bool(), neg_masks, current_mask)
 
-    return result_2, current_mask
+    # Remove Bias column when returning the mask
+    return result_2, (current_mask[:, :-1] if isinstance(current_mask, torch.Tensor) else current_mask)
 
 
 def example_predictions_heloc():

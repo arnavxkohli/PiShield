@@ -95,10 +95,16 @@ class ShieldLayer(torch.nn.Module):
     def __call__(self, preds: torch.Tensor,
                  ground_truth: torch.Tensor | None = None):
 
+        if self.training:
+            self.masks = {}
+
         device = preds.device
         N = preds.shape[-1]
         corrected_preds = torch.cat([preds.clone(), torch.ones(preds.shape[0], 1, device=device)], dim=1)
         preds = corrected_preds.clone()
+
+        if isinstance(ground_truth, torch.Tensor):
+            ground_truth = torch.cat([ground_truth.clone(), torch.ones(ground_truth.shape[0], 1, device=device)], dim=1)
 
         for x in self.dense_ordering:
             pos = x.id
@@ -119,7 +125,8 @@ class ShieldLayer(torch.nn.Module):
                                                                           pos_masks,
                                                                           neg_masks)
 
-            self.masks[pos] = final_masks
+            if self.training:
+                self.masks[pos] = final_masks
 
             preds = corrected_preds.clone()
             corrected_preds = preds.clone()
@@ -129,15 +136,17 @@ class ShieldLayer(torch.nn.Module):
                      ground_truth: torch.Tensor | None = None,
                      reduction='none') -> Tuple[torch.Tensor, torch.Tensor | None]:
 
+        device = preds.device
+
+        if isinstance(matrix, torch.Tensor):
+            matrix = matrix.to(device)
+        else:
+            return matrix, None
+
         # Failsafe for inference time: During inference you need to ensure that
         # ground truth values aren't used.
         if not self.training:
             ground_truth = None
-
-        if type(matrix) != torch.Tensor:
-            return matrix, None
-        else:
-            matrix = matrix.to(preds.device)
 
         self.B = preds.shape[0]  # batch size
         self.C = matrix.shape[0]  # num constraints in the current set
@@ -146,8 +155,8 @@ class ShieldLayer(torch.nn.Module):
         # expand tensors
         preds = preds.unsqueeze(1).expand((self.B, self.C, self.N))
 
-        if ground_truth is not None:
-            ground_truth = ground_truth.clone().unsqueeze(1).expand((self.B, self.C, self.N)).to(preds.device)
+        if isinstance(ground_truth, torch.Tensor):
+            ground_truth = ground_truth.clone().unsqueeze(1).expand((self.B, self.C, self.N)).to(device)
 
         matrix = matrix.clone().unsqueeze(0).expand((self.B, self.C, self.N))
 
@@ -169,7 +178,7 @@ class ShieldLayer(torch.nn.Module):
         # Use the mask indices, which are basically just which constraint the
         # mask was selected from for the given batch item.
         if mask_index is not None and masks is not None:
-            batch_idx = torch.arange(self.B, device=preds.device)
+            batch_idx = torch.arange(self.B, device=device)
             selected_mask = masks[batch_idx, mask_index]
 
         return result, selected_mask
@@ -182,7 +191,7 @@ class ShieldLayer(torch.nn.Module):
         # This function assumes we are working only with matrices that encode constraints
 
         # In case ground truth not given, return default values
-        if ground_truth is None:
+        if not isinstance(ground_truth, torch.Tensor):
             return preds, None
 
         mask_indices = (torch.abs(matrix) > EPSILON).nonzero()
