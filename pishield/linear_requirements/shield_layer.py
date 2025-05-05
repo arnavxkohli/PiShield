@@ -1,5 +1,6 @@
 from typing import List, Union, Tuple
 import torch
+import torch.nn.functional as F
 from collections import defaultdict
 import random
 
@@ -12,7 +13,9 @@ from pishield.linear_requirements.constants import EPSILON, INFINITY
 
 
 class ShieldLayer(torch.nn.Module):
-    def __init__(self, num_variables: int, requirements_filepath: str, ordering_choice: str = 'given'):
+    def __init__(self, num_variables: int, requirements_filepath: str, ordering_choice: str = 'given',
+                 init_temp: float = 1.0, min_temp: float = 0.1, anneal_rate: float = 0.01):
+
         super().__init__()
         self.num_variables = num_variables
         ordering, constraints = parse_constraints_file(requirements_filepath)
@@ -26,6 +29,19 @@ class ShieldLayer(torch.nn.Module):
         self.pos_matrices, self.neg_matrices = self.create_matrices()
         self.dense_ordering = self.get_dense_ordering()  # requires self.sets_of_constraints
         self.masks = {}
+
+        # Parameter dictionary for dynamic learnable params
+        self._mask_logit_params = torch.nn.ParameterDict()
+
+        self.register_buffer('temperature', torch.tensor(init_temp))
+        self.min_temp = min_temp
+        self.anneal_rate = anneal_rate
+        # Learnable scale factor for mask gradients
+        self.mask_scale = torch.nn.Parameter(torch.tensor(1.0))
+
+        self.B = -1
+        self.C = -1
+        self.N = -1
 
     def create_matrices(self):
         # this function creates matrices C+ and C- for each variable x_i
@@ -92,8 +108,7 @@ class ShieldLayer(torch.nn.Module):
         return matrix
 
     # def __call__(self, preds, *args, **kwargs):
-    def __call__(self, preds: torch.Tensor,
-                 ground_truth: torch.Tensor | None = None):
+    def forward(self, preds: torch.Tensor, ground_truth: torch.Tensor | None = None):
 
         if self.training:
             self.masks = {}
@@ -113,11 +128,13 @@ class ShieldLayer(torch.nn.Module):
             # pos_matrix and neg_matrix have shape: num constraints that contain x x num variables
 
             pos_matrix, pos_masks = self.apply_matrix(preds.clone(), self.pos_matrices[x],
-                                           reduction='max',
-                                           ground_truth=ground_truth)
+                                                      pos,
+                                                      ground_truth=ground_truth,
+                                                      reduction='max')
             neg_matrix, neg_masks = self.apply_matrix(preds.clone(), self.neg_matrices[x],
-                                           reduction='min',
-                                           ground_truth=ground_truth)
+                                                      pos,
+                                                      ground_truth=ground_truth,
+                                                      reduction='min')
 
             corrected_preds[:, pos], final_masks = get_final_x_correction(preds[:, pos],
                                                                           pos_matrix,
@@ -133,6 +150,7 @@ class ShieldLayer(torch.nn.Module):
         return corrected_preds[:, :N]
 
     def apply_matrix(self, preds: torch.Tensor, matrix: Union[torch.Tensor, float],
+                     variable_idx: int,
                      ground_truth: torch.Tensor | None = None,
                      reduction='none') -> Tuple[torch.Tensor, torch.Tensor | None]:
 
@@ -163,7 +181,8 @@ class ShieldLayer(torch.nn.Module):
         # Use the ground truth if given, or else use the default value from before
         # This happens in two cases, during inference, or when using the shield
         # layer without masking of gradients
-        selections, masks = self.__apply_mask(preds, matrix, ground_truth)
+        selections, masks = self.__apply_mask(preds, matrix, variable_idx,
+                                              reduction, ground_truth)
         result = (selections * matrix).sum(dim=2)
 
         selected_mask, mask_index = None, None
@@ -183,8 +202,14 @@ class ShieldLayer(torch.nn.Module):
 
         return result, selected_mask
 
+    def anneal_temperature(self, device):
+        self.temperature = torch.max(self.temperature * (1.0 - self.anneal_rate),
+                                     torch.tensor(self.min_temp, device=device))
+
     def __apply_mask(self, preds: torch.Tensor,
                      matrix: torch.Tensor,
+                     variable_idx: int,
+                     reduction: str,
                      ground_truth: torch.Tensor | None = None) -> Tuple[torch.Tensor, torch.Tensor | None]:
         # This function basically returns for each constraint, the potential mask indices that can be used
         # Should be used for every element in the batch
@@ -194,23 +219,37 @@ class ShieldLayer(torch.nn.Module):
         if not isinstance(ground_truth, torch.Tensor):
             return preds, None
 
-        mask_indices = (torch.abs(matrix) > EPSILON).nonzero()
+        device = preds.device
 
-        mask_groupings = defaultdict(lambda: defaultdict(list))
-        for batch, constr_idx, var_idx in mask_indices:
-            mask_groupings[batch.item()][constr_idx.item()].append(var_idx.item())
+        eligible_mask = torch.abs(matrix) > EPSILON
 
-        masks = torch.zeros(self.B, self.C, self.N, dtype=torch.bool, device=preds.device)
-        for b in range(self.B):
-            if b in mask_groupings:
-                for c, grouping in mask_groupings[b].items():
-                    if grouping:
-                        # Select any one of the possible variables used in the bound constraints
-                        # as the mask variable
-                        masks[b, c, random.choice(grouping)] = True
+        # Different predictions for anchor variables and matrix - need unique keys
+        matrix_key = f"x{variable_idx}_{reduction}"
 
-        # At the mask indices, select from the prediction, in all other indices, select from the ground truth.
-        # The reason this works is because the matrix will zero out all the irrelevant indices (which correspond
-        # to variables that are not involved in the inequalities).
-        selections = torch.where(masks, preds, ground_truth)
-        return selections, masks
+        if matrix_key not in self._mask_logit_params:
+            init_logits = torch.randn(1, self.C, self.N, device=device) * 0.01
+            self._mask_logit_params[matrix_key] = torch.nn.Parameter(init_logits)
+
+        # Logits to -inf for ineligible variables
+        masked_logits = torch.where(eligible_mask,
+                                    self._mask_logit_params[matrix_key].expand(self.B, self.C, self.N),
+                                    torch.tensor(-INFINITY, device=device))
+
+        # If constraint with no eligible variables present (should not happen)
+        masked_logits = torch.where(eligible_mask.any(dim=2, keepdim=True),
+                                    masked_logits,
+                                    torch.zeros_like(masked_logits))
+
+        # Learnable one-hot encoding for variable mask selection
+        soft_masks = F.gumbel_softmax(masked_logits,
+                                      tau=self.temperature,
+                                      hard=True, # Ensure one-hot encoding
+                                      dim=-1)
+
+        # Scale masks for loss function calculation
+        scaled_masks = soft_masks * eligible_mask.float() * self.mask_scale
+
+        # Ensure exactly one element is selected
+        selections = torch.where(soft_masks.bool(), preds, ground_truth)
+
+        return selections, scaled_masks
