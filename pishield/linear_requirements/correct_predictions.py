@@ -1,5 +1,6 @@
 import pickle as pkl
 import torch
+from typing import Union
 
 INFINITY = torch.inf
 
@@ -10,51 +11,89 @@ def get_constr_at_level_x(x, sets_of_constr):
             return sets_of_constr[var]
 
 
-def get_final_x_correction(initial_x_val: torch.Tensor, pos_x_corrected: torch.Tensor,
-                           neg_x_corrected: torch.Tensor,
-                           pos_masks: torch.Tensor | None = None,
-                           neg_masks: torch.Tensor | None = None) -> torch.Tensor:
+def get_final_x_correction(
+    initial_vals:      torch.Tensor,
+    pos_corrected:     Union[torch.Tensor, float, None],
+    neg_corrected:     Union[torch.Tensor, float, None],
+    pos_mask_weights:  Union[torch.Tensor, None],
+    neg_mask_weights:  Union[torch.Tensor, None],
+) -> tuple[torch.Tensor, Union[torch.Tensor, None]]:
+    """
+    Returns:
+      - corrected_vals: Tensor (B,)
+      - final_masks:    None, or Tensor (B,N) of either bools (hard) or floats (soft)
+    """
+    B = initial_vals.size(0)
+    device = initial_vals.device
 
-    # Masks Shape: batch_size x num_variables, X Shape: batch_size
-    # The modification to this function requires selecting the correct mask.
-    # Three options: Select the unchanged mask (so the mask with all False rows)
-    # Select the positive mask (for some batch items)
-    # Select the negative mask (for some batch items)
-    # This depends on which value of the max is being chosen as well.
+    # Determine number of variables N from whichever mask is present
+    N = None
+    if isinstance(pos_mask_weights, torch.Tensor):
+        N = pos_mask_weights.size(1)
+    elif isinstance(neg_mask_weights, torch.Tensor):
+        N = neg_mask_weights.size(1)
 
-    B = initial_x_val.shape[0]
-    device = initial_x_val.device
+    # Helper to check “is a Tensor with real data”
+    def is_real_tensor(x):
+        return isinstance(x, torch.Tensor)
 
-    N = -1
-    if isinstance(pos_masks, torch.Tensor):
-        N = pos_masks.shape[1]
-    elif isinstance(neg_masks, torch.Tensor):
-        N = neg_masks.shape[1]
+    # -----------------------------------------
+    # 1) HARD-MASK (fallback) if either mask is None
+    # -----------------------------------------
+    if pos_mask_weights is None or neg_mask_weights is None:
+        hard_mask = None
 
-    current_mask = None
-    if N != -1:
-        current_mask = torch.zeros((B, N), dtype=torch.bool, device=device)
+        # Positive pass
+        if is_real_tensor(pos_corrected):
+            safe_pos = pos_corrected.where(~pos_corrected.isinf(), initial_vals)
+            tmp_vals, chose_pos = torch.stack([initial_vals, safe_pos], dim=1).max(dim=1)
+            if N is not None:
+                hard_mask = chose_pos.unsqueeze(1).expand(B, N) & pos_mask_weights.bool()
+        else:
+            tmp_vals = initial_vals
 
-    if not isinstance(pos_x_corrected, torch.Tensor):
-        result_1 = initial_x_val
-    else:
-        pos_x_corrected = pos_x_corrected.where(~(pos_x_corrected.isinf()), initial_x_val)
-        result_1, indices_1 = torch.cat([initial_x_val.unsqueeze(1), pos_x_corrected.unsqueeze(1)], dim=1).max(dim=1)
-        if current_mask is not None:
-            current_mask = torch.where(indices_1.unsqueeze(1).bool(), pos_masks, current_mask)
+        # Negative pass
+        if is_real_tensor(neg_corrected):
+            safe_neg = neg_corrected.where(~neg_corrected.isinf(), initial_vals)
+            final_vals, chose_neg = torch.stack([tmp_vals, safe_neg], dim=1).min(dim=1)
+            if hard_mask is not None:
+                hard_mask = torch.where(
+                    chose_neg.unsqueeze(1).expand(B, N),
+                    neg_mask_weights.bool(),
+                    hard_mask
+                )
+        else:
+            final_vals = tmp_vals
 
-    if not isinstance(neg_x_corrected, torch.Tensor):
-        result_2 = result_1
-    else:
-        # keep_initial_neg_mask = neg_x_corrected.isinf()
-        # neg_x_corrected[keep_initial_neg_mask] = initial_x_val[keep_initial_neg_mask]
-        neg_x_corrected = neg_x_corrected.where(~(neg_x_corrected.isinf()), initial_x_val)
-        result_2, indices_2 = torch.cat([result_1.unsqueeze(1), neg_x_corrected.unsqueeze(1)], dim=1).min(dim=1)
-        if current_mask is not None:
-            current_mask = torch.where(indices_2.unsqueeze(1).bool(), neg_masks, current_mask)
+        return final_vals, (hard_mask if hard_mask is not None else None)
 
-    # Remove Bias column when returning the mask
-    return result_2, (current_mask[:, :-1] if isinstance(current_mask, torch.Tensor) else current_mask)
+    # -----------------------------------------
+    # 2) SOFT-MASK (training)  
+    # -----------------------------------------
+    # Initialize a float accumulator
+    final_mask_weights = torch.zeros((B, N), device=device, dtype=torch.float32)
+
+    # Positive pass
+    safe_pos = (
+        pos_corrected.where(~pos_corrected.isinf(), initial_vals)
+        if is_real_tensor(pos_corrected)
+        else initial_vals
+    )
+    tmp_vals, chose_pos = torch.stack([initial_vals, safe_pos], dim=1).max(dim=1)
+    chose_pos_f = chose_pos.to(torch.float32).unsqueeze(1)  # (B,1)
+    final_mask_weights += chose_pos_f * pos_mask_weights
+
+    # Negative pass
+    safe_neg = (
+        neg_corrected.where(~neg_corrected.isinf(), initial_vals)
+        if is_real_tensor(neg_corrected)
+        else tmp_vals
+    )
+    final_vals, chose_neg = torch.stack([tmp_vals, safe_neg], dim=1).min(dim=1)
+    chose_neg_f = chose_neg.to(torch.float32).unsqueeze(1)
+    final_mask_weights += chose_neg_f * neg_mask_weights
+
+    return final_vals, final_mask_weights
 
 
 def example_predictions_heloc():

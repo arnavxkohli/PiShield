@@ -1,67 +1,50 @@
 import torch
 
-
-def adjusted_constraint_loss(output: torch.Tensor,
-                             target: torch.Tensor,
-                             masks: dict[int, torch.Tensor | None],
-                             reduction: str = 'mean'):
+def adjusted_constraint_loss(
+    output: torch.Tensor,      # (B, N)
+    target: torch.Tensor,      # (B, N)
+    masks: dict[int, torch.Tensor | None],
+    reduction: str = 'mean'
+) -> torch.Tensor:
     """
-    Calculates a modified MSE loss that works in tandem with the masking logic
-    present in the shield layer. Where there is no adjustment made, the masks
-    dictionary contains null values, and this simplifies to a regular MSE
-    for that variable. In case a variable has been adjusted, the masked variable
-    is picked out as a guide for the gradient's direction. This function ensures
-    that gradients either stay the same or move in the same direction as they would
-    without an augmented shield layer.
-
-    Args:
-        output: The model's output tensor.
-        target: The target tensor.
-        masks: A dictionary where keys are variable indices and values are tensors
-               indicating which other variables' errors influence the loss adjustment
-               for the key variable. A non-zero entry mask[i, j] means variable j's
-               error sign affects variable i's loss term.
-        reduction: Specifies the reduction to apply to the output: 'none', 'mean', 'sum'.
-
-    Returns:
-        The calculated adjusted loss tensor.
+    If a mask for var i is:
+      • None  -> use plain MSE on column i
+      • bool  -> zero‐out misaligned samples (hard‐mask case)
+      • float -> re‐weight squared‐error by (1 + mask_weight)
     """
-    # Ensure a valid reduction method is specified.
-    if reduction not in ('sum', 'mean', 'none'):
-        raise ValueError(f"Adjusted Constraint Loss Error: Invalid reduction type; {reduction}")
+    if reduction not in ('none', 'mean', 'sum'):
+        raise ValueError(f"Invalid reduction: {reduction!r}")
+
+    errs = output - target          # (B, N)
+    sq   = errs.pow(2)              # (B, N)
+    signs = torch.sign(errs)        # (B, N)
+
+    B, N = output.shape
     device = output.device
 
-    # Calculate basic error components needed for adjustment.
-    prediction_errors = output - target
-    squared_errors = prediction_errors.pow(2) # Base MSE calculation.
-    error_signs = torch.sign(prediction_errors) # Needed to determine adjustment direction.
-
-    # Start with standard squared errors; adjustments be applied in-place.
-    adjusted_loss_terms = squared_errors.clone()
-
-    # Iterate through each variable that might have its loss term adjusted.
     for var_idx, mask in masks.items():
-        # Process only if a valid mask tensor exists for this variable.
-        if isinstance(mask, torch.Tensor):
-            mask = mask.to(device)
-            # Find samples (rows) and influencing variables (columns) requiring adjustment.
-            corrections = mask.nonzero()
+        if mask is None:
+            continue
 
-            # Apply adjustments only if there are corrections to be made for this variable.
-            if corrections.numel() > 0:
-                correction_indices = corrections[:, 0] # Sample indices needing adjustment.
-                mask_indices = corrections[:, 1]       # Indices of variables influencing the adjustment.
+        mask = mask.to(device)
+        # boolean mask: zero‐out misaligned
+        if mask.dtype == torch.bool:
+            # find samples where mask[b,j] is True, then check sign alignment
+            coords = mask.nonzero(as_tuple=False)
+            b_idx, j_idx = coords[:,0], coords[:,1]
+            var_signs  = signs[b_idx, var_idx]
+            mask_signs = signs[b_idx, j_idx]
+            aligned = (var_signs * mask_signs > 0).to(dtype=sq.dtype)
+            sq[b_idx, var_idx] *= aligned
 
-                # Get the signs of errors for the variable being adjusted and the influencing variable.
-                var_signs = error_signs[correction_indices, var_idx]
-                mask_signs = error_signs[correction_indices, mask_indices]
+        # float mask: re‐weight
+        else:
+            # weight = 1 + mask_weight on that var
+            w = 1.0 + mask[:, var_idx]
+            sq[:, var_idx] *= w
 
-                # Modify the loss term
-                adjusted_loss_terms[correction_indices, var_idx] *= var_signs * mask_signs
-
-    # Aggregate the adjusted loss terms based on the specified reduction method.
-    if reduction == "mean":
-        return torch.mean(adjusted_loss_terms)
-    elif reduction == "sum":
-        return torch.sum(adjusted_loss_terms)
-    return adjusted_loss_terms
+    if reduction == 'mean':
+        return sq.mean()
+    elif reduction == 'sum':
+        return sq.sum()
+    return sq

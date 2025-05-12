@@ -206,50 +206,48 @@ class ShieldLayer(torch.nn.Module):
         self.temperature = torch.max(self.temperature * (1.0 - self.anneal_rate),
                                      torch.tensor(self.min_temp, device=device))
 
-    def __apply_mask(self, preds: torch.Tensor,
-                     matrix: torch.Tensor,
+    def __apply_mask(self,
+                     preds: torch.Tensor,           # (B, C, N)
+                     matrix: torch.Tensor,          # (B, C, N)
                      variable_idx: int,
                      reduction: str,
-                     ground_truth: torch.Tensor | None = None) -> Tuple[torch.Tensor, torch.Tensor | None]:
-        # This function basically returns for each constraint, the potential mask indices that can be used
-        # Should be used for every element in the batch
-        # This function assumes we are working only with matrices that encode constraints
+                     ground_truth: torch.Tensor | None = None
+                     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        # In case ground truth not given, return default values
-        if not isinstance(ground_truth, torch.Tensor):
+        # If no ground truth (i.e. inference), skip masking
+        if ground_truth is None:
             return preds, None
 
-        device = preds.device
+        # Build eligibility mask: which vars actually appear in each constraint
+        eligible = (matrix.abs() > EPSILON)            # (B, C, N) Bool
 
-        eligible_mask = torch.abs(matrix) > EPSILON
+        # Create or fetch a learnable logit tensor for this (x_i, direction) pair
+        key = f"{variable_idx}_{reduction}"
+        if key not in self._mask_logit_params:
+            # initialize small random logits for each constraint row
+            init = torch.zeros(1, matrix.size(1), matrix.size(2), device=preds.device)
+            # shape (1, C, N) so we can broadcast over batch
+            self._mask_logit_params[key] = torch.nn.Parameter(init)
 
-        # Different predictions for anchor variables and matrix - need unique keys
-        matrix_key = f"x{variable_idx}_{reduction}"
+        logits = self._mask_logit_params[key].expand(preds.size(0), -1, -1)
+        # Mask out ineligible positions by setting their logits to -inf
+        logits = torch.where(eligible, logits, torch.tensor(-INFINITY, device=logits.device))
 
-        if matrix_key not in self._mask_logit_params:
-            init_logits = torch.randn(1, self.C, self.N, device=device) * 0.01
-            self._mask_logit_params[matrix_key] = torch.nn.Parameter(init_logits)
+        # Soft attention weights over the N variables in each constraint
+        # Shape: (B, C, N), sums to 1 along dim=-1
+        soft_masks = F.softmax(logits / self.temperature, dim=-1)
 
-        # Logits to -inf for ineligible variables
-        masked_logits = torch.where(eligible_mask,
-                                    self._mask_logit_params[matrix_key].expand(self.B, self.C, self.N),
-                                    torch.tensor(-INFINITY, device=device))
+        # If you want a “hard” mask at inference, you can:
+        # hard_idx = soft_masks.argmax(dim=-1)        # (B, C)
+        # then build a one-hot from that. But during training we keep it soft.
 
-        # If constraint with no eligible variables present (should not happen)
-        masked_logits = torch.where(eligible_mask.any(dim=2, keepdim=True),
-                                    masked_logits,
-                                    torch.zeros_like(masked_logits))
+        # Mix preds and ground_truth per-variable via soft mask:
+        # for each sample b, constraint c, variable j:
+        #   selection = soft_masks[b,c,j]*preds[b,c,j] + (1-soft_masks[b,c,j])*gt[b,c,j]
+        selections = soft_masks * preds + (1.0 - soft_masks) * ground_truth
 
-        # Learnable one-hot encoding for variable mask selection
-        soft_masks = F.gumbel_softmax(masked_logits,
-                                      tau=self.temperature,
-                                      hard=True, # Ensure one-hot encoding
-                                      dim=-1)
+        # `selections` flows gradients to preds weighted by soft_masks,
+        # yet still anchors all other coords toward ground_truth in proportion.
 
-        # Scale masks for loss function calculation
-        scaled_masks = soft_masks * eligible_mask.float() * self.mask_scale
+        return selections, soft_masks
 
-        # Ensure exactly one element is selected
-        selections = torch.where(soft_masks.bool(), preds, ground_truth)
-
-        return selections, scaled_masks
