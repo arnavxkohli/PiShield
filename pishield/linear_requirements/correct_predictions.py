@@ -11,50 +11,23 @@ def get_constr_at_level_x(x, sets_of_constr):
 
 
 def get_final_x_correction(initial_x_val: torch.Tensor, pos_x_corrected: torch.Tensor,
-                           neg_x_corrected: torch.Tensor,
-                           pos_masks: torch.Tensor | None = None,
-                           neg_masks: torch.Tensor | None = None) -> torch.Tensor:
+                           neg_x_corrected: torch.Tensor) -> torch.Tensor:
 
-    # Masks Shape: batch_size x num_variables, X Shape: batch_size
-    # The modification to this function requires selecting the correct mask.
-    # Three options: Select the unchanged mask (so the mask with all False rows)
-    # Select the positive mask (for some batch items)
-    # Select the negative mask (for some batch items)
-    # This depends on which value of the max is being chosen as well.
-
-    B = initial_x_val.shape[0]
-    device = initial_x_val.device
-
-    N = -1
-    if isinstance(pos_masks, torch.Tensor):
-        N = pos_masks.shape[1]
-    elif isinstance(neg_masks, torch.Tensor):
-        N = neg_masks.shape[1]
-
-    current_mask = None
-    if N != -1:
-        current_mask = torch.zeros((B, N), dtype=torch.bool, device=device)
-
-    if not isinstance(pos_x_corrected, torch.Tensor):
+    if type(pos_x_corrected) is not torch.Tensor:
         result_1 = initial_x_val
     else:
         pos_x_corrected = pos_x_corrected.where(~(pos_x_corrected.isinf()), initial_x_val)
-        result_1, indices_1 = torch.cat([initial_x_val.unsqueeze(1), pos_x_corrected.unsqueeze(1)], dim=1).max(dim=1)
-        if current_mask is not None:
-            current_mask = torch.where(indices_1.unsqueeze(1).bool(), pos_masks, current_mask)
+        result_1 = torch.cat([initial_x_val.unsqueeze(1), pos_x_corrected.unsqueeze(1)], dim=1).amax(dim=1)
 
-    if not isinstance(neg_x_corrected, torch.Tensor):
+    if type(neg_x_corrected) is not torch.Tensor:
         result_2 = result_1
     else:
         # keep_initial_neg_mask = neg_x_corrected.isinf()
         # neg_x_corrected[keep_initial_neg_mask] = initial_x_val[keep_initial_neg_mask]
         neg_x_corrected = neg_x_corrected.where(~(neg_x_corrected.isinf()), initial_x_val)
-        result_2, indices_2 = torch.cat([result_1.unsqueeze(1), neg_x_corrected.unsqueeze(1)], dim=1).min(dim=1)
-        if current_mask is not None:
-            current_mask = torch.where(indices_2.unsqueeze(1).bool(), neg_masks, current_mask)
+        result_2 = torch.cat([result_1.unsqueeze(1), neg_x_corrected.unsqueeze(1)], dim=1).amin(dim=1)
 
-    # Remove Bias column when returning the mask
-    return result_2, (current_mask[:, :-1] if isinstance(current_mask, torch.Tensor) else current_mask)
+    return result_2
 
 
 def example_predictions_heloc():
